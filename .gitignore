@@ -1,0 +1,11 @@
+# Blender and editor caches
+__pycache__/
+*.pyc
+
+# Local Unity/editor state
+Library/
+Temp/
+Obj/
+Logs/
+UserSettings/
+
