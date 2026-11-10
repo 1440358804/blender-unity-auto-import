@@ -10,7 +10,7 @@
 ### Blender 端
 
 在 Blender 的 `Edit > Preferences > Add-ons > Install from Disk` 中选择
-`Blender端/导入unity-1.0.0.zip`，启用“导入unity”，然后在 3D View 按 `N` 打开侧栏。
+`Blender端/导入unity-2.0.0.zip`，启用“导入unity”，然后在 3D View 按 `N` 打开侧栏。
 
 ### Unity 端
 

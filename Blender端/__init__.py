@@ -1,10 +1,10 @@
 bl_info = {
     "name": "导入unity",
     "author": "OpenAI",
-    "version": (1, 0, 0),
+    "version": (2, 0, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > 导入unity",
-    "description": "Export selected mesh objects to a Unity project and write its import settings",
+    "description": "Export selected mesh objects to a Unity project with built-in import presets",
     "category": "Import-Export",
 }
 
@@ -12,12 +12,61 @@ import json
 import os
 import tempfile
 import bpy
-from bpy.props import StringProperty
+from bpy.props import EnumProperty, StringProperty
 
 
-DEFAULT_MODEL_RELATIVE_PATH = os.path.join("Assets", "Game", "Art", "Environment", "TokyoRooftops")
-DEFAULT_MATERIAL_RELATIVE_PATH = os.path.join("Assets", "Game", "WorldMap", "Props", "Materials")
-DEFAULT_PREFAB_RELATIVE_PATH = os.path.join("Assets", "Game", "WorldMap", "Props", "TokyoRooftops")
+SPEC_CUSTOM = "CUSTOM"
+
+# Built-in preset paths. Change PRESET_ROOT here if the Unity project moves.
+PRESET_ROOT = r"D:\YHY\acepro"
+PRESET_FBX_PATH = PRESET_ROOT + r"\Assets\Game\Art\Environment\TokyoRooftops"
+PRESET_MATERIAL_PATH = PRESET_ROOT + r"\Assets\Game\WorldMap\Materials"
+
+SPEC_FIELDS = (
+    ("fbx_directory", "FBX 导入位置"),
+    ("material_directory", "材质搜索位置"),
+    ("prefab_directory", "Prefab 保存位置"),
+)
+
+# (stable id, dropdown label, (fbx path, material path, prefab path))
+SPEC_PRESETS = (
+    ("STATIC", "静态物体", (
+        PRESET_FBX_PATH,
+        PRESET_MATERIAL_PATH,
+        PRESET_ROOT + r"\Assets\Game\WorldMap\Facilities\Static\TokyoRooftops",
+    )),
+    ("DYNAMIC", "动态物体", (
+        PRESET_FBX_PATH,
+        PRESET_MATERIAL_PATH,
+        PRESET_ROOT + r"\Assets\Game\WorldMap\Facilities\DynamicProps\TokyoRooftops",
+    )),
+    ("INTERACTIVE", "可交换物体", (
+        PRESET_FBX_PATH,
+        PRESET_MATERIAL_PATH,
+        PRESET_ROOT + r"\Assets\Game\WorldMap\Facilities\InteractiveProps\TokyoRooftops",
+    )),
+    ("NO_COLLISION", "无碰撞物体", (
+        PRESET_FBX_PATH,
+        PRESET_MATERIAL_PATH,
+        PRESET_ROOT + r"\Assets\Game\WorldMap\Facilities\NoCollisionProps\TokyoRooftops",
+    )),
+    ("DECORATION", "装饰建筑", (
+        PRESET_FBX_PATH,
+        PRESET_MATERIAL_PATH,
+        PRESET_ROOT + r"\Assets\Game\WorldMap\Facilities\AttachmentsModules\TokyoRooftops",
+    )),
+    ("EXTERIOR_WALL", "建筑外墙", (
+        PRESET_FBX_PATH,
+        PRESET_MATERIAL_PATH,
+        PRESET_ROOT + r"\Assets\Game\WorldMap\Facilities\ExteriorWalls\TokyoRooftops",
+    )),
+)
+
+SPEC_DEFAULTS = {spec_id: paths for spec_id, _, paths in SPEC_PRESETS}
+
+SPEC_ITEMS = (
+    (SPEC_CUSTOM, "自定义", "使用三条自定义路径"),
+) + tuple((spec_id, label, "使用预设: " + label) for spec_id, label, _ in SPEC_PRESETS)
 
 
 def _normal(path):
@@ -44,24 +93,22 @@ def _last_selected_mesh(context):
     return meshes[-1] if meshes else None
 
 
-class UNITYIMPORT_OT_set_defaults(bpy.types.Operator):
-    bl_idname = "unityimport.set_defaults"
-    bl_label = "根据 Unity 根目录生成默认路径"
-    bl_description = "按 Unity 项目根目录生成 FBX、材质和 Prefab 默认位置，并回填选中模型名称"
-    bl_options = {'REGISTER', 'UNDO'}
+def _preset_property_name(spec_id, field):
+    return "unityimport_preset_" + spec_id.lower() + "_" + field
 
-    def execute(self, context):
-        scene = context.scene
-        project = _absolute(scene.unityimport_project_root)
-        if not os.path.isdir(project) or not os.path.isfile(os.path.join(project, "ProjectSettings", "ProjectVersion.txt")):
-            self.report({'ERROR'}, "请选择有效的 Unity 项目根目录")
-            return {'CANCELLED'}
 
-        scene.unityimport_model_directory = os.path.join(project, DEFAULT_MODEL_RELATIVE_PATH)
-        scene.unityimport_material_directory = os.path.join(project, DEFAULT_MATERIAL_RELATIVE_PATH)
-        scene.unityimport_prefab_directory = os.path.join(project, DEFAULT_PREFAB_RELATIVE_PATH)
-        self.report({'INFO'}, "已根据 Unity 根目录生成默认路径")
-        return {'FINISHED'}
+def _custom_property_name(field):
+    return "unityimport_custom_" + field
+
+
+def _export_directories(scene):
+    spec = scene.unityimport_spec
+    if spec in SPEC_DEFAULTS:
+        return tuple(
+            getattr(scene, _preset_property_name(spec, field))
+            for field, _ in SPEC_FIELDS
+        )
+    return tuple(getattr(scene, _custom_property_name(field)) for field, _ in SPEC_FIELDS)
 
 
 class UNITYIMPORT_OT_import_name(bpy.types.Operator):
@@ -80,6 +127,25 @@ class UNITYIMPORT_OT_import_name(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class UNITYIMPORT_OT_reset_preset(bpy.types.Operator):
+    bl_idname = "unityimport.reset_preset"
+    bl_label = "恢复预设默认路径"
+    bl_description = "把当前预设的三条路径恢复为插件内置默认值"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        spec = scene.unityimport_spec
+        defaults = SPEC_DEFAULTS.get(spec)
+        if defaults is None:
+            self.report({'ERROR'}, "当前不是预设模式")
+            return {'CANCELLED'}
+        for (field, _), value in zip(SPEC_FIELDS, defaults):
+            setattr(scene, _preset_property_name(spec, field), value)
+        self.report({'INFO'}, "已恢复预设默认路径")
+        return {'FINISHED'}
+
+
 class UNITYIMPORT_OT_export(bpy.types.Operator):
     bl_idname = "unityimport.export_selected"
     bl_label = "导出并导入 Unity"
@@ -89,13 +155,18 @@ class UNITYIMPORT_OT_export(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
         project = _normal(scene.unityimport_project_root)
-        model_dir = _normal(scene.unityimport_model_directory)
-        material_dir = _normal(scene.unityimport_material_directory)
-        prefab_dir = _normal(scene.unityimport_prefab_directory)
         if not os.path.isdir(project) or not os.path.isfile(os.path.join(project, "ProjectSettings", "ProjectVersion.txt")):
             self.report({'ERROR'}, "请选择有效的 Unity 项目根目录")
             return {'CANCELLED'}
 
+        model_path, material_path, prefab_path = _export_directories(scene)
+        if not all(path.strip() for path in (model_path, material_path, prefab_path)):
+            self.report({'ERROR'}, "当前模式的三条路径不能为空")
+            return {'CANCELLED'}
+
+        model_dir = _normal(model_path)
+        material_dir = _normal(material_path)
+        prefab_dir = _normal(prefab_path)
         assets = os.path.join(project, "Assets")
         if not all(_inside(path, assets) for path in (model_dir, material_dir, prefab_dir)):
             self.report({'ERROR'}, "FBX、材质搜索和 Prefab 目录都必须位于 Unity 项目的 Assets 内")
@@ -114,9 +185,9 @@ class UNITYIMPORT_OT_export(bpy.types.Operator):
 
         os.makedirs(model_dir, exist_ok=True)
         output_project = _absolute(scene.unityimport_project_root)
-        output_model_dir = _absolute(scene.unityimport_model_directory)
-        output_material_dir = _absolute(scene.unityimport_material_directory)
-        output_prefab_dir = _absolute(scene.unityimport_prefab_directory)
+        output_model_dir = os.path.realpath(bpy.path.abspath(model_path))
+        output_material_dir = os.path.realpath(bpy.path.abspath(material_path))
+        output_prefab_dir = os.path.realpath(bpy.path.abspath(prefab_path))
         relative_model = os.path.relpath(os.path.join(output_model_dir, name + ".fbx"), output_project).replace(os.sep, "/")
         relative_material = os.path.relpath(output_material_dir, output_project).replace(os.sep, "/")
         relative_prefab = os.path.relpath(output_prefab_dir, output_project).replace(os.sep, "/")
@@ -182,37 +253,64 @@ class UNITYIMPORT_PT_panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+
         layout.prop(scene, "unityimport_project_root", text="Unity 项目")
-        layout.operator(UNITYIMPORT_OT_set_defaults.bl_idname, icon='FILE_REFRESH')
-        layout.prop(scene, "unityimport_model_directory", text="FBX 导入位置")
-        layout.prop(scene, "unityimport_material_directory", text="材质搜索位置")
-        layout.prop(scene, "unityimport_prefab_directory", text="Prefab 保存位置")
+        layout.prop(scene, "unityimport_spec", text="导入规格")
+
+        spec = scene.unityimport_spec
+        if spec in SPEC_DEFAULTS:
+            layout.label(text="预设路径通常无需修改", icon='INFO')
+            column = layout.column(align=True)
+            for field, label in SPEC_FIELDS:
+                column.prop(scene, _preset_property_name(spec, field), text=label)
+            layout.operator(UNITYIMPORT_OT_reset_preset.bl_idname, text="恢复默认", icon='FILE_REFRESH')
+        else:
+            column = layout.column(align=True)
+            for field, label in SPEC_FIELDS:
+                column.prop(scene, _custom_property_name(field), text=label)
+
+        layout.separator()
         layout.prop(scene, "unityimport_model_name", text="模型名称")
         layout.operator(UNITYIMPORT_OT_import_name.bl_idname, icon='SORTALPHA')
         layout.operator(UNITYIMPORT_OT_export.bl_idname, icon='EXPORT')
 
 
-CLASSES = (UNITYIMPORT_OT_set_defaults, UNITYIMPORT_OT_import_name, UNITYIMPORT_OT_export, UNITYIMPORT_PT_panel)
+CLASSES = (
+    UNITYIMPORT_OT_import_name,
+    UNITYIMPORT_OT_reset_preset,
+    UNITYIMPORT_OT_export,
+    UNITYIMPORT_PT_panel,
+)
 
 
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
+
     bpy.types.Scene.unityimport_project_root = StringProperty(name="Unity 项目根目录", subtype='DIR_PATH')
-    bpy.types.Scene.unityimport_model_directory = StringProperty(
-        name="FBX 导入位置", subtype='DIR_PATH', default=DEFAULT_MODEL_RELATIVE_PATH)
-    bpy.types.Scene.unityimport_material_directory = StringProperty(
-        name="材质搜索位置", subtype='DIR_PATH', default=DEFAULT_MATERIAL_RELATIVE_PATH)
-    bpy.types.Scene.unityimport_prefab_directory = StringProperty(
-        name="Prefab 保存位置", subtype='DIR_PATH', default=DEFAULT_PREFAB_RELATIVE_PATH)
+    bpy.types.Scene.unityimport_spec = EnumProperty(name="导入规格", items=SPEC_ITEMS, default=SPEC_CUSTOM)
+    for field, label in SPEC_FIELDS:
+        setattr(
+            bpy.types.Scene,
+            _custom_property_name(field),
+            StringProperty(name=label, subtype='DIR_PATH', default=""),
+        )
+    for spec_id, _, defaults in SPEC_PRESETS:
+        for (field, label), value in zip(SPEC_FIELDS, defaults):
+            setattr(
+                bpy.types.Scene,
+                _preset_property_name(spec_id, field),
+                StringProperty(name=label, subtype='DIR_PATH', default=value),
+            )
     bpy.types.Scene.unityimport_model_name = StringProperty(name="模型名称", default="Model")
 
 
 def unregister():
-    for name in (
-        "unityimport_project_root", "unityimport_model_directory",
-        "unityimport_material_directory", "unityimport_prefab_directory", "unityimport_model_name",
-    ):
+    names = ["unityimport_project_root", "unityimport_spec", "unityimport_model_name"]
+    names.extend(_custom_property_name(field) for field, _ in SPEC_FIELDS)
+    for spec_id, _, _ in SPEC_PRESETS:
+        names.extend(_preset_property_name(spec_id, field) for field, _ in SPEC_FIELDS)
+    for name in names:
         if hasattr(bpy.types.Scene, name):
             delattr(bpy.types.Scene, name)
     for cls in reversed(CLASSES):
